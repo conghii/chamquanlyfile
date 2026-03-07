@@ -1,0 +1,217 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ═══════════════════════════════════════════════════════════
+    //  Helper Functions
+    // ═══════════════════════════════════════════════════════════
+
+    /// Check if the request comes from an authenticated user.
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    /// Check if the authenticated user is a member of the given team.
+    function isTeamMember(teamId) {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/teams/$(teamId)/members/$(request.auth.uid));
+    }
+
+    /// Get the role of the authenticated user in the given team.
+    /// Returns: "admin" | "editor" | "viewer"
+    function getRole(teamId) {
+      return get(/databases/$(database)/documents/teams/$(teamId)/members/$(request.auth.uid)).data.role;
+    }
+
+    /// Check if the user is an admin of the team.
+    function isAdmin(teamId) {
+      return isTeamMember(teamId) && getRole(teamId) == "admin";
+    }
+
+    /// Check if the user is at least editor (editor or admin).
+    function isEditorOrAbove(teamId) {
+      return isTeamMember(teamId) && getRole(teamId) in ["admin", "editor"];
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  teams/{teamId}
+    //  ─ Team document with settings, name, ownerId
+    // ═══════════════════════════════════════════════════════════
+
+    match /teams/{teamId} {
+
+      // Any team member can read team info
+      allow read: if isTeamMember(teamId);
+
+      // Any authenticated user can create a new team
+      allow create: if isAuthenticated()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 1
+        && request.resource.data.name.size() <= 100;
+
+      // Only admin can update team settings
+      allow update: if isAdmin(teamId)
+        && request.resource.data.ownerId == resource.data.ownerId;  // Cannot change owner
+
+      // Only the team owner can delete the team
+      allow delete: if isAuthenticated()
+        && resource.data.ownerId == request.auth.uid;
+
+      // ═════════════════════════════════════════════════════════
+      //  teams/{teamId}/members/{uid}
+      //  ─ Team membership with role, profile
+      // ═════════════════════════════════════════════════════════
+
+      match /members/{uid} {
+
+        // Any team member can see the member list
+        allow read: if isTeamMember(teamId);
+
+        // Only admin can add new members
+        // Validate role is one of allowed values
+        allow create: if isAdmin(teamId)
+          && request.resource.data.role in ["admin", "editor", "viewer"]
+          && request.resource.data.email is string;
+
+        // Admin can update any member; users can update their own profile
+        // Role field can only be changed by admin
+        allow update: if isTeamMember(teamId)
+          && (
+            // Admin can update anything
+            isAdmin(teamId)
+            ||
+            // User can update own profile but NOT change their role
+            (request.auth.uid == uid
+              && request.resource.data.role == resource.data.role)
+          )
+          && request.resource.data.role in ["admin", "editor", "viewer"];
+
+        // Only admin can remove members
+        allow delete: if isAdmin(teamId);
+      }
+
+      // ═════════════════════════════════════════════════════════
+      //  teams/{teamId}/folders/{folderId}
+      //  ─ Folder metadata
+      // ═════════════════════════════════════════════════════════
+
+      match /folders/{folderId} {
+
+        // Any member can read folders
+        allow read: if isTeamMember(teamId);
+
+        // Editor or above can create folders
+        // Validate: name 1-100 chars, type is valid
+        allow create: if isEditorOrAbove(teamId)
+          && request.resource.data.name is string
+          && request.resource.data.name.size() >= 1
+          && request.resource.data.name.size() <= 100
+          && request.resource.data.type in ["product", "learning", "storage", "general"];
+
+        // Editor or above can update folders (rename, change type, update fileCount)
+        allow update: if isEditorOrAbove(teamId)
+          && request.resource.data.name is string
+          && request.resource.data.name.size() >= 1
+          && request.resource.data.name.size() <= 100
+          && request.resource.data.type in ["product", "learning", "storage", "general"];
+
+        // Only admin can delete folders
+        allow delete: if isAdmin(teamId);
+      }
+
+      // ═════════════════════════════════════════════════════════
+      //  teams/{teamId}/files/{fileId}
+      //  ─ File metadata
+      // ═════════════════════════════════════════════════════════
+
+      match /files/{fileId} {
+
+        // Any member can read files
+        allow read: if isTeamMember(teamId);
+
+        // Editor or above can upload files
+        // Validate: caller can only set uploadedBy.uid to their own UID
+        allow create: if isEditorOrAbove(teamId)
+          && request.resource.data.name is string
+          && request.resource.data.name.size() >= 1
+          && request.resource.data.name.size() <= 255
+          && request.resource.data.mimeType is string
+          && request.resource.data.size is number
+          && request.resource.data.size >= 0
+          && request.resource.data.uploadedBy.uid == request.auth.uid;
+
+        // Editor or above can update files (rename, change tags, kanbanStatus, asinId)
+        // Immutable fields: uploadedBy, uploadedAt, driveFileId cannot be changed
+        allow update: if isEditorOrAbove(teamId)
+          && request.resource.data.name is string
+          && request.resource.data.name.size() >= 1
+          && request.resource.data.name.size() <= 255
+          && request.resource.data.uploadedBy == resource.data.uploadedBy
+          && request.resource.data.uploadedAt == resource.data.uploadedAt
+          && request.resource.data.driveFileId == resource.data.driveFileId;
+
+        // Admin can delete any file
+        // Editor can only delete their own uploads
+        allow delete: if isAdmin(teamId)
+          || (isEditorOrAbove(teamId) && resource.data.uploadedBy.uid == request.auth.uid);
+      }
+
+      // ═════════════════════════════════════════════════════════
+      //  teams/{teamId}/asins/{asinId}
+      //  ─ ASIN product codes
+      // ═════════════════════════════════════════════════════════
+
+      match /asins/{asinId} {
+
+        // Any member can read ASINs
+        allow read: if isTeamMember(teamId);
+
+        // Editor or above can create/update ASINs
+        // Validate: code is exactly 10 alphanumeric uppercase characters
+        allow create: if isEditorOrAbove(teamId)
+          && request.resource.data.code is string
+          && request.resource.data.code.size() == 10
+          && request.resource.data.code.matches('^[A-Z0-9]{10}$')
+          && request.resource.data.productName is string;
+
+        allow update: if isEditorOrAbove(teamId)
+          && request.resource.data.code is string
+          && request.resource.data.code.size() == 10
+          && request.resource.data.code.matches('^[A-Z0-9]{10}$')
+          && request.resource.data.productName is string;
+
+        // Only admin can delete ASINs
+        allow delete: if isAdmin(teamId);
+      }
+
+      // ═════════════════════════════════════════════════════════
+      //  teams/{teamId}/activity/{activityId}
+      //  ─ Activity log (immutable audit trail)
+      // ═════════════════════════════════════════════════════════
+
+      match /activity/{activityId} {
+
+        // Any member can read activity log
+        allow read: if isTeamMember(teamId);
+
+        // Editor or above can create log entries
+        // Validate: userId must match caller's UID (prevent impersonation)
+        allow create: if isEditorOrAbove(teamId)
+          && request.resource.data.userId == request.auth.uid
+          && request.resource.data.action is string;
+
+        // Activity logs are immutable — no updates or deletes
+        allow update: if false;
+        allow delete: if false;
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Deny all other paths by default
+    //  (Firestore denies unmatched paths automatically,
+    //   this is just for documentation)
+    // ═══════════════════════════════════════════════════════════
+  }
+}

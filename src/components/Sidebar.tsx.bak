@@ -1,0 +1,974 @@
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import {
+    HiOutlineChevronRight, HiOutlineChevronDown,
+    HiOutlinePlus, HiOutlinePencil, HiOutlineTrash,
+    HiOutlineFolderAdd, HiOutlineCheck, HiX,
+    HiOutlineFolder, HiOutlineArchive,
+    HiOutlineBriefcase, HiOutlineAcademicCap, HiOutlinePhotograph,
+    HiOutlineVideoCamera, HiOutlineDocumentText, HiOutlineKey,
+    HiOutlineTemplate, HiOutlineUserGroup, HiOutlineChartBar,
+    HiOutlineCamera, HiOutlineColorSwatch, HiOutlineSearch,
+    HiOutlineTruck, HiOutlineSelector, HiStar, HiOutlineStar,
+    HiOutlineExternalLink, HiOutlineCollection
+} from 'react-icons/hi';
+import {
+    DndContext, closestCenter, KeyboardSensor, PointerSensor,
+    useSensor, useSensors, DragOverlay
+} from '@dnd-kit/core';
+import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core';
+import {
+    SortableContext, sortableKeyboardCoordinates,
+    verticalListSortingStrategy, useSortable
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import IconPickerDialog, { getIconNode } from './IconPickerDialog';
+import type { FolderNode, AppConfig, FolderMeta } from '../types';
+
+interface SidebarProps {
+    folders: FolderNode[];
+    activeFolderId: string | null;
+    onFolderClick: (folder: FolderNode) => void;
+    onNewFolder: (parentId: string | null, name: string) => void;
+    onRenameFolder: (folderId: string, newName: string) => void;
+    onDeleteFolder: (folderId: string, folderName: string) => void;
+    isOpen: boolean;
+    appConfig: AppConfig;
+    onUpdateFolderMeta: (folderId: string, metaPatch: Partial<FolderMeta>) => void;
+    onHomeClick: () => void;
+}
+
+/* ── Folder type config ──────────────────────────────────── */
+
+const FOLDER_STYLES: Record<string, {
+    icon: React.ReactNode;
+    gradient: string;
+    textColor: string;
+    bgColor: string;
+    glowColor: string;
+}> = {
+    product: {
+        icon: <HiOutlineBriefcase size={16} />,
+        gradient: 'linear-gradient(135deg, #FF9900 0%, #FF6B00 100%)',
+        textColor: '#FF9900',
+        bgColor: 'rgba(255,153,0,0.08)',
+        glowColor: 'rgba(255,153,0,0.3)',
+    },
+    learning: {
+        icon: <HiOutlineAcademicCap size={16} />,
+        gradient: 'linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%)',
+        textColor: '#A78BFA',
+        bgColor: 'rgba(139,92,246,0.08)',
+        glowColor: 'rgba(139,92,246,0.3)',
+    },
+    archive: {
+        icon: <HiOutlineArchive size={16} />,
+        gradient: 'linear-gradient(135deg, #6B7280 0%, #4B5563 100%)',
+        textColor: '#9CA3AF',
+        bgColor: 'rgba(107,114,128,0.08)',
+        glowColor: 'rgba(107,114,128,0.3)',
+    },
+    subfolder: {
+        icon: <HiOutlineFolder size={16} />,
+        gradient: 'linear-gradient(135deg, #3B82F6 0%, #2563EB 100%)',
+        textColor: '#60A5FA',
+        bgColor: 'rgba(59,130,246,0.06)',
+        glowColor: 'rgba(59,130,246,0.2)',
+    },
+};
+
+function getFolderStyle(node: FolderNode) {
+    // Smart detection based on name and type
+    const name = node.name.toLowerCase();
+    if (node.type === 'product' || name.startsWith('b0') || name === 'products' || name === 'product') {
+        return FOLDER_STYLES.product;
+    }
+    if (node.type === 'learning' || name === 'learning' || name === 'tài liệu') {
+        return FOLDER_STYLES.learning;
+    }
+    if (node.type === 'archive' || name.startsWith('_archive') || name === 'archive') {
+        return FOLDER_STYLES.archive;
+    }
+    // Sub-categories under known parents
+    if (['images', 'videos', 'copywriting', 'keywords', 'templates', 'template', 'supplier', 'suppliers'].includes(name)) {
+        return { ...FOLDER_STYLES.subfolder, icon: getSubIcon(name) };
+    }
+    return FOLDER_STYLES.subfolder;
+}
+
+function getSubIcon(name: string): React.ReactNode {
+    const map: Record<string, React.ReactNode> = {
+        images: <HiOutlinePhotograph size={16} />,
+        videos: <HiOutlineVideoCamera size={16} />,
+        copywriting: <HiOutlineDocumentText size={16} />,
+        keywords: <HiOutlineKey size={16} />,
+        templates: <HiOutlineTemplate size={16} />,
+        template: <HiOutlineTemplate size={16} />,
+        supplier: <HiOutlineUserGroup size={16} />,
+        suppliers: <HiOutlineUserGroup size={16} />,
+        ppc: <HiOutlineChartBar size={16} />,
+        photography: <HiOutlineCamera size={16} />,
+        psd: <HiOutlineColorSwatch size={16} />,
+        seo: <HiOutlineSearch size={16} />,
+        fba_logistics: <HiOutlineTruck size={16} />,
+        seo_listing: <HiOutlineSearch size={16} />,
+    };
+    return map[name] || <HiOutlineFolder size={16} />;
+}
+
+/* ── Context Menu ────────────────────────────────────────── */
+
+interface ContextMenuState {
+    x: number;
+    y: number;
+    node: FolderNode;
+}
+
+function ContextMenu({
+    menu, isStarred, onToggleStar, onRename, onAddSub, onDelete, onChangeIcon, onClose,
+}: {
+    menu: ContextMenuState;
+    isStarred: boolean;
+    onToggleStar: () => void;
+    onRename: () => void;
+    onAddSub: () => void;
+    onDelete: () => void;
+    onChangeIcon: () => void;
+    onClose: () => void;
+}) {
+    const ref = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        const handle = (e: MouseEvent) => {
+            if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+        };
+        document.addEventListener('mousedown', handle);
+        return () => document.removeEventListener('mousedown', handle);
+    }, [onClose]);
+
+    return (
+        <div
+            ref={ref}
+            className="fixed z-50 w-52 py-1.5 rounded-xl glass-strong animate-scale-in"
+            style={{
+                left: menu.x, top: menu.y,
+                boxShadow: '0 12px 40px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05)',
+            }}
+        >
+            <button onClick={onToggleStar} className="ctx-item">
+                {isStarred ? (
+                    <><HiStar size={14} className="text-primary" /> Bỏ cắm cờ</>
+                ) : (
+                    <><HiOutlineStar size={14} /> Cắm cờ</>
+                )}
+            </button>
+            <div className="my-1 border-t border-border" />
+            <button onClick={onRename} className="ctx-item">
+                <HiOutlinePencil size={14} /> Đổi tên
+            </button>
+            <button onClick={onChangeIcon} className="ctx-item">
+                <HiOutlineColorSwatch size={14} /> Đổi Icon
+            </button>
+            <button onClick={onAddSub} className="ctx-item">
+                <HiOutlineFolderAdd size={14} /> Tạo subfolder
+            </button>
+            <div className="my-1 border-t border-border" />
+            <button onClick={onDelete} className="ctx-item text-error hover:bg-error/10">
+                <HiOutlineTrash size={14} /> Xóa
+            </button>
+        </div>
+    );
+}
+
+/* ── Delete Confirm Dialog ───────────────────────────────── */
+
+function DeleteConfirm({
+    name, onConfirm, onCancel,
+}: {
+    name: string; onConfirm: () => void; onCancel: () => void;
+}) {
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onCancel}>
+            <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+            <div className="relative glass rounded-2xl p-6 max-w-sm w-full animate-scale-in"
+                onClick={(e) => e.stopPropagation()}
+                style={{ boxShadow: '0 24px 64px rgba(0,0,0,0.5)' }}>
+                <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-xl bg-error/15 flex items-center justify-center text-lg">⚠️</div>
+                    <div>
+                        <h3 className="text-sm font-bold text-white">Xóa folder?</h3>
+                        <p className="text-xs text-text-muted">Hành động không thể hoàn tác</p>
+                    </div>
+                </div>
+                <p className="text-xs text-text-secondary mb-5">
+                    Bạn có chắc muốn xóa <strong className="text-white">"{name}"</strong> và tất cả nội dung bên trong?
+                </p>
+                <div className="flex justify-end gap-2">
+                    <button onClick={onCancel}
+                        className="px-4 py-2 rounded-xl text-xs font-medium text-text-secondary hover:text-white hover:bg-surface-3 transition-all">
+                        Hủy
+                    </button>
+                    <button onClick={onConfirm}
+                        className="px-4 py-2 rounded-xl text-xs font-semibold bg-error text-white hover:bg-error/90 transition-all">
+                        Xóa
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/* ── Add Folder Dialog ───────────────────────────────────── */
+
+function AddFolderDialog({
+    parentName, onConfirm, onCancel,
+}: {
+    parentName: string | null; onConfirm: (name: string) => void; onCancel: () => void;
+}) {
+    const [name, setName] = useState('');
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    useEffect(() => { inputRef.current?.focus(); }, []);
+
+    const handleSubmit = () => {
+        const trimmed = name.trim();
+        if (trimmed) onConfirm(trimmed);
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onCancel}>
+            <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+            <div className="relative glass rounded-2xl p-6 max-w-sm w-full animate-scale-in"
+                onClick={(e) => e.stopPropagation()}
+                style={{ boxShadow: '0 24px 64px rgba(0,0,0,0.5)' }}>
+                <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-primary bg-primary/10"
+                        style={{ background: 'linear-gradient(135deg, rgba(255,153,0,0.15), rgba(255,153,0,0.05))' }}>
+                        <HiOutlineFolderAdd size={20} />
+                    </div>
+                    <div>
+                        <h3 className="text-sm font-bold text-white">Tạo folder mới</h3>
+                        <p className="text-xs text-text-muted">
+                            {parentName ? `Bên trong "${parentName}"` : 'Tạo folder gốc'}
+                        </p>
+                    </div>
+                </div>
+                <input ref={inputRef}
+                    type="text" value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
+                    placeholder="Tên folder..."
+                    className="w-full px-4 py-2.5 rounded-xl text-sm bg-surface-3 border border-border
+            text-white outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all mb-4"
+                />
+                <div className="flex justify-end gap-2">
+                    <button onClick={onCancel}
+                        className="px-4 py-2 rounded-xl text-xs font-medium text-text-secondary hover:text-white hover:bg-surface-3 transition-all">
+                        Hủy
+                    </button>
+                    <button onClick={handleSubmit} disabled={!name.trim()}
+                        className="px-4 py-2 rounded-xl text-xs font-semibold text-white disabled:opacity-40 transition-all"
+                        style={{ background: 'linear-gradient(135deg, #FF9900, #E88B00)' }}>
+                        Tạo
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/* ── Quick Access Item ───────────────────────────────────── */
+
+function QuickAccessItem({
+    node, activeFolderId, onFolderClick, appConfig, onContextMenu
+}: {
+    node: FolderNode; activeFolderId: string | null;
+    onFolderClick: (f: FolderNode) => void;
+    appConfig: AppConfig;
+    onContextMenu: (e: React.MouseEvent, node: FolderNode) => void;
+}) {
+    const isActive = activeFolderId === node.id;
+    const baseStyle = getFolderStyle(node);
+    const customMeta = appConfig.folderMeta[node.id];
+    const style = {
+        ...baseStyle,
+        icon: customMeta?.icon ? getIconNode(customMeta.icon, baseStyle.icon) : baseStyle.icon
+    };
+
+    return (
+        <button
+            onClick={() => onFolderClick(node)}
+            onContextMenu={(e) => onContextMenu(e, node)}
+            className={`group w-full flex items-center gap-2.5 rounded-lg text-sm transition-all duration-150 relative py-1.5 px-2.5
+          ${isActive ? 'text-white font-medium' : 'text-text-secondary hover:text-white hover:bg-white/[0.04]'}`}
+            style={{ background: isActive ? style.bgColor : undefined }}
+        >
+            {isActive && (
+                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] rounded-r-full"
+                    style={{ height: '60%', background: style.gradient, boxShadow: `0 0 8px ${style.glowColor}` }}
+                />
+            )}
+            <span className="shrink-0 leading-none select-none flex items-center justify-center"
+                style={{ color: isActive ? style.textColor : 'currentcolor', filter: isActive ? `drop-shadow(0 0 4px ${style.glowColor})` : 'none' }}>
+                {style.icon}
+            </span>
+            <span className="whitespace-nowrap overflow-hidden text-ellipsis flex-1 text-left"
+                style={{ color: isActive ? style.textColor : undefined }}>
+                {node.name}
+            </span>
+            <span className="shrink-0 text-primary opacity-50"><HiStar size={12} /></span>
+        </button>
+    );
+}
+
+/* ── Folder Tree Item (premium design) ───────────────────── */
+
+function FolderTreeItem({
+    node, depth, activeFolderId, onFolderClick,
+    onContextMenu, editingId, onRenameSubmit, onRenameCancel,
+    isLastChild, appConfig, onUpdateFolderMeta
+}: {
+    node: FolderNode; depth: number; activeFolderId: string | null;
+    onFolderClick: (f: FolderNode) => void;
+    onContextMenu: (e: React.MouseEvent, node: FolderNode) => void;
+    editingId: string | null;
+    onRenameSubmit: (id: string, name: string) => void;
+    onRenameCancel: () => void;
+    isLastChild: boolean;
+    appConfig: AppConfig;
+    onUpdateFolderMeta: (folderId: string, metaPatch: Partial<FolderMeta>) => void;
+}) {
+    const {
+        attributes, listeners, setNodeRef, transform, transition,
+    } = useSortable({ id: node.id });
+
+    const sortableStyle: React.CSSProperties = {
+        transform: CSS.Translate.toString(transform),
+        transition: transition || 'transform 200ms cubic-bezier(0.25, 1, 0.5, 1)',
+    };
+
+    const [isExpanded, setIsExpanded] = useState(
+        depth < 2 || node.id === 'products' || node.id === 'learning'
+    );
+    const isActive = activeFolderId === node.id;
+    const hasChildren = node.children.length > 0;
+    const isEditing = editingId === node.id;
+    const baseStyle = getFolderStyle(node);
+    const customMeta = appConfig.folderMeta[node.id];
+
+    // Override icon if user customized it
+    const style = {
+        ...baseStyle,
+        icon: customMeta?.icon ? getIconNode(customMeta.icon, baseStyle.icon) : baseStyle.icon
+    };
+
+    const [editName, setEditName] = useState(node.name);
+    const editRef = useRef<HTMLInputElement>(null);
+
+    useEffect(() => {
+        if (isEditing) {
+            setEditName(node.name);
+            setTimeout(() => {
+                editRef.current?.focus();
+                editRef.current?.select();
+            }, 50);
+        }
+    }, [isEditing, node.name]);
+
+    const handleRenameSubmit = () => {
+        const trimmed = editName.trim();
+        if (trimmed && trimmed !== node.name) {
+            onRenameSubmit(node.id, trimmed);
+        } else {
+            onRenameCancel();
+        }
+    };
+
+    // Is this a "section header" (top-level with children)?
+    const isSectionHeader = depth === 0 && hasChildren;
+
+    // Sort children
+    const sortedChildren = [...node.children].sort((a, b) => {
+        const orderA = appConfig.folderMeta[a.id]?.order ?? 999;
+        const orderB = appConfig.folderMeta[b.id]?.order ?? 999;
+        if (orderA === orderB) return a.name.localeCompare(b.name);
+        return orderA - orderB;
+    });
+
+    return (
+        <div className="relative" ref={setNodeRef} style={sortableStyle}>
+            {/* Tree connection lines */}
+            {depth > 0 && (
+                <>
+                    {/* Vertical line from parent */}
+                    <div
+                        className="absolute left-0 top-0 w-px"
+                        style={{
+                            left: `${8 + (depth - 1) * 20}px`,
+                            height: isLastChild ? '18px' : '100%',
+                            background: 'var(--color-border)',
+                            opacity: 0.4,
+                        }}
+                    />
+                    {/* Horizontal branch line */}
+                    <div
+                        className="absolute top-[18px]"
+                        style={{
+                            left: `${8 + (depth - 1) * 20}px`,
+                            width: '12px',
+                            height: '1px',
+                            background: 'var(--color-border)',
+                            opacity: 0.4,
+                        }}
+                    />
+                </>
+            )}
+
+            <button
+                onClick={() => {
+                    if (hasChildren) setIsExpanded(!isExpanded);
+                    onFolderClick(node);
+                }}
+                onContextMenu={(e) => onContextMenu(e, node)}
+                className={`group w-full flex items-center gap-2.5 rounded-lg text-sm transition-all duration-150 relative
+          ${isSectionHeader ? 'py-2 mt-1 mb-0.5' : 'py-1.5'}
+          ${isActive
+                        ? 'text-white font-medium'
+                        : 'text-text-secondary hover:text-white hover:bg-white/[0.04]'
+                    }`}
+                style={{
+                    paddingLeft: `${depth === 0 ? 10 : 24 + depth * 20}px`,
+                    paddingRight: '10px',
+                    background: isActive ? style.bgColor : undefined,
+                }}
+            >
+                {/* Active indicator pill */}
+                {isActive && (
+                    <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] rounded-r-full"
+                        style={{
+                            height: '60%',
+                            background: style.gradient,
+                            boxShadow: `0 0 8px ${style.glowColor}`,
+                        }}
+                    />
+                )}
+
+                {/* Chevron for expandable items */}
+                {hasChildren ? (
+                    <span className={`shrink-0 transition-transform duration-200 ${isExpanded ? '' : '-rotate-0'}`}
+                        style={{ color: isActive ? style.textColor : 'var(--color-text-muted)' }}>
+                        {isExpanded
+                            ? <HiOutlineChevronDown size={12} />
+                            : <HiOutlineChevronRight size={12} />}
+                    </span>
+                ) : (
+                    <span className="w-3 shrink-0" />
+                )}
+
+                {/* Drag Handle (only visible on hover for depth > 0 if desired, but we'll show it for all for consistency) */}
+                <div {...attributes} {...listeners} className="opacity-0 group-hover:opacity-100 shrink-0 text-text-muted hover:text-white cursor-grab active:cursor-grabbing transition-opacity mr-0.5">
+                    <HiOutlineSelector size={14} />
+                </div>
+
+                {/* Folder icon with gradient background */}
+                <span className="shrink-0 leading-none select-none flex items-center justify-center"
+                    style={{ color: isActive ? style.textColor : 'currentcolor', filter: isActive ? 'drop-shadow(0 0 4px ' + style.glowColor + ')' : 'none' }}>
+                    {style.icon}
+                </span>
+
+                {/* Folder name or edit input */}
+                {isEditing ? (
+                    <div className="flex items-center gap-1 flex-1 min-w-0" onClick={(e) => e.stopPropagation()}>
+                        <input
+                            ref={editRef}
+                            type="text"
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleRenameSubmit();
+                                if (e.key === 'Escape') onRenameCancel();
+                            }}
+                            onBlur={handleRenameSubmit}
+                            className="flex-1 min-w-0 px-2 py-0.5 rounded-md text-sm bg-surface-3 border border-primary
+                text-white outline-none focus:ring-2 focus:ring-primary/20"
+                        />
+                        <button onClick={handleRenameSubmit}
+                            className="shrink-0 text-success hover:text-success/80 transition-colors">
+                            <HiOutlineCheck size={14} />
+                        </button>
+                        <button onClick={onRenameCancel}
+                            className="shrink-0 text-text-muted hover:text-error transition-colors">
+                            <HiX size={12} />
+                        </button>
+                    </div>
+                ) : (
+                    <span className={`whitespace-nowrap overflow-hidden text-ellipsis
+            ${isSectionHeader ? 'font-semibold text-xs uppercase tracking-wider' : ''}
+            ${isActive ? '' : ''}`}
+                        style={{ color: isActive ? style.textColor : undefined }}>
+                        {node.name}
+                    </span>
+                )}
+
+                {/* Child count badge */}
+                {hasChildren && !isEditing && (
+                    <span className="ml-auto shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full
+            opacity-0 group-hover:opacity-100 transition-opacity"
+                        style={{ background: style.bgColor, color: style.textColor }}>
+                        {node.children.length}
+                    </span>
+                )}
+
+                {/* Open in Drive button */}
+                {node.driveId && !isEditing && (
+                    <a
+                        href={`https://drive.google.com/drive/folders/${node.driveId}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity
+                            w-5 h-5 rounded flex items-center justify-center
+                            text-text-muted hover:text-primary hover:bg-primary/10"
+                        title="Mở trên Drive"
+                    >
+                        <HiOutlineExternalLink size={12} />
+                    </a>
+                )}
+            </button>
+
+            {/* Children */}
+            {isExpanded && hasChildren && (
+                <div className="relative animate-fade-in pl-[2px]">
+                    <SortableContext items={sortedChildren.map(c => c.id)} strategy={verticalListSortingStrategy}>
+                        {sortedChildren.map((child, i) => (
+                            <FolderTreeItem
+                                key={child.id}
+                                node={child}
+                                depth={depth + 1}
+                                activeFolderId={activeFolderId}
+                                onFolderClick={onFolderClick}
+                                onContextMenu={onContextMenu}
+                                editingId={editingId}
+                                onRenameSubmit={onRenameSubmit}
+                                onRenameCancel={onRenameCancel}
+                                isLastChild={i === sortedChildren.length - 1}
+                                appConfig={appConfig}
+                                onUpdateFolderMeta={onUpdateFolderMeta}
+                            />
+                        ))}
+                    </SortableContext>
+                </div>
+            )}
+        </div>
+    );
+}
+
+/* ── Sidebar ─────────────────────────────────────────────── */
+
+const MIN_WIDTH = 200;
+const MAX_WIDTH = 480;
+const DEFAULT_WIDTH = 260;
+
+export default function Sidebar({
+    folders, activeFolderId, onFolderClick, onNewFolder, onRenameFolder, onDeleteFolder, isOpen, appConfig, onUpdateFolderMeta, onHomeClick
+}: SidebarProps) {
+    // ── Resize ──
+    const [width, setWidth] = useState(DEFAULT_WIDTH);
+    const isResizing = useRef(false);
+    const sidebarRef = useRef<HTMLElement>(null);
+
+    const startResize = useCallback((e: React.MouseEvent) => {
+        e.preventDefault();
+        isResizing.current = true;
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+
+        const onMove = (ev: MouseEvent) => {
+            if (!isResizing.current) return;
+            const sidebar = sidebarRef.current;
+            if (!sidebar) return;
+            const rect = sidebar.getBoundingClientRect();
+            const newWidth = ev.clientX - rect.left;
+            setWidth(Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, newWidth)));
+        };
+
+        const onUp = () => {
+            isResizing.current = false;
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+        };
+
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+    }, []);
+
+    // ── Context menu ──
+    const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+    const handleContextMenu = useCallback((e: React.MouseEvent, node: FolderNode) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setContextMenu({ x: e.clientX, y: e.clientY, node });
+    }, []);
+
+    // ── Rename ──
+    const [editingId, setEditingId] = useState<string | null>(null);
+    const handleStartRename = useCallback(() => {
+        if (contextMenu) {
+            setEditingId(contextMenu.node.id);
+            setContextMenu(null);
+        }
+    }, [contextMenu]);
+
+    const handleRenameSubmit = useCallback((id: string, name: string) => {
+        onRenameFolder(id, name);
+        setEditingId(null);
+    }, [onRenameFolder]);
+
+    const handleRenameCancel = useCallback(() => setEditingId(null), []);
+
+    // ── Add subfolder ──
+    const [addFolderParent, setAddFolderParent] = useState<{ id: string | null; name: string | null } | null>(null);
+    const handleAddSub = useCallback(() => {
+        if (contextMenu) {
+            setAddFolderParent({ id: contextMenu.node.id, name: contextMenu.node.name });
+            setContextMenu(null);
+        }
+    }, [contextMenu]);
+
+    const handleAddFolder = useCallback((name: string) => {
+        if (addFolderParent) {
+            onNewFolder(addFolderParent.id, name);
+        }
+        setAddFolderParent(null);
+    }, [addFolderParent, onNewFolder]);
+
+    // ── Delete ──
+    const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+    const handleDeleteClick = useCallback(() => {
+        if (contextMenu) {
+            setDeleteTarget({ id: contextMenu.node.id, name: contextMenu.node.name });
+            setContextMenu(null);
+        }
+    }, [contextMenu]);
+
+    const handleDeleteConfirm = useCallback(() => {
+        if (deleteTarget) {
+            onDeleteFolder(deleteTarget.id, deleteTarget.name);
+            setDeleteTarget(null);
+        }
+    }, [deleteTarget, onDeleteFolder]);
+
+    // ── Custom Icon ──
+    const [iconPickerTarget, setIconPickerTarget] = useState<{ id: string; name: string; currentIcon: string | null } | null>(null);
+
+    const handleChangeIconClick = useCallback(() => {
+        if (contextMenu) {
+            const id = contextMenu.node.id;
+            const currentIcon = appConfig.folderMeta[id]?.icon || null;
+            setIconPickerTarget({ id, name: contextMenu.node.name, currentIcon });
+            setContextMenu(null);
+        }
+    }, [contextMenu, appConfig]);
+
+    // ── Toggle Star ──
+    const handleToggleStarClick = useCallback(() => {
+        if (contextMenu) {
+            const id = contextMenu.node.id;
+            const currentStarred = appConfig.folderMeta[id]?.isStarred || false;
+            onUpdateFolderMeta(id, { isStarred: !currentStarred });
+            setContextMenu(null);
+        }
+    }, [contextMenu, appConfig, onUpdateFolderMeta]);
+
+    // ── Drag and Drop ──
+    const sensors = useSensors(
+        useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+        useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+    );
+
+    const [activeDragId, setActiveDragId] = useState<string | null>(null);
+
+    const handleDragStart = (event: DragStartEvent) => {
+        setActiveDragId(event.active.id as string);
+    };
+
+    const handleDragEnd = (event: DragEndEvent) => {
+        const { active, over } = event;
+        if (!over || active.id === over.id) return;
+
+        // Find the parent array to determine new sorting order
+        const findSiblings = (nodes: FolderNode[], id: string): FolderNode[] | null => {
+            if (nodes.some(n => n.id === id)) return nodes;
+            for (const node of nodes) {
+                const found = findSiblings(node.children, id);
+                if (found) return found;
+            }
+            return null;
+        };
+
+        // Top level folders don't have a single parent array in this setup, 
+        // they are mapped across roots, so we search all nested children.
+        const allRoots = folders;
+        let siblings = findSiblings(allRoots, active.id as string);
+        if (!siblings) {
+            // Must be root level
+            siblings = allRoots;
+        }
+
+        const oldIndex = siblings.findIndex(n => n.id === active.id);
+        const newIndex = siblings.findIndex(n => n.id === over.id);
+
+        if (oldIndex !== -1 && newIndex !== -1) {
+            // Apply new order
+            const item = siblings[oldIndex];
+            // We'll update the meta for all siblings in this list to sync their order
+            const newArr = [...siblings];
+            newArr.splice(oldIndex, 1);
+            newArr.splice(newIndex, 0, item);
+
+            newArr.forEach((child, index) => {
+                onUpdateFolderMeta(child.id, { order: index });
+            });
+        }
+        setActiveDragId(null);
+    };
+
+    // Sort top-level folders (children of root)
+    const sortedRoots = folders.map(root => {
+        const sortedChildren = [...root.children].sort((a, b) => {
+            const orderA = appConfig.folderMeta[a.id]?.order ?? 999;
+            const orderB = appConfig.folderMeta[b.id]?.order ?? 999;
+            if (orderA === orderB) return a.name.localeCompare(b.name);
+            return orderA - orderB;
+        });
+        return { ...root, children: sortedChildren };
+    });
+
+    // Count total folders
+    const countFolders = (nodes: FolderNode[]): number =>
+        nodes.reduce((sum, n) => sum + 1 + countFolders(n.children), 0);
+    const totalFolders = sortedRoots.reduce((sum, root) => sum + countFolders(root.children), 0);
+
+    // Flatten tree to find starred folders
+    const starredFolders = useMemo<FolderNode[]>(() => {
+        const result: FolderNode[] = [];
+        const traverse = (nodes: FolderNode[]) => {
+            nodes.forEach(n => {
+                if (appConfig.folderMeta[n.id]?.isStarred) result.push(n);
+                traverse(n.children);
+            });
+        };
+        traverse(folders);
+        return result.sort((a, b) => {
+            // Sort by order if available, else by name
+            const orderA = appConfig.folderMeta[a.id]?.order ?? 999;
+            const orderB = appConfig.folderMeta[b.id]?.order ?? 999;
+            if (orderA === orderB) return a.name.localeCompare(b.name);
+            return orderA - orderB;
+        });
+    }, [folders, appConfig.folderMeta]);
+
+    return (
+        <>
+            <aside
+                ref={sidebarRef}
+                className={`
+          fixed lg:static inset-y-0 left-0 z-40
+          shrink-0 flex flex-col
+          glass-strong transition-transform duration-300
+          ${isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+        `}
+                style={{
+                    width: `${width}px`,
+                    minWidth: `${MIN_WIDTH}px`,
+                    maxWidth: `${MAX_WIDTH}px`,
+                    borderRight: '1px solid var(--color-border)',
+                    top: '64px',
+                    height: 'calc(100vh - 64px)',
+                }}
+            >
+                {/* Sidebar header */}
+                <div className="px-4 pt-4 pb-2">
+                    <div className="flex items-center gap-2 mb-1">
+                        <span className="text-base">🗂️</span>
+                        <span className="text-xs font-bold text-white uppercase tracking-wider">Quản lý file</span>
+                    </div>
+                    <p className="text-[10px] text-text-muted pl-6">
+                        {totalFolders} folder{totalFolders !== 1 ? 's' : ''} · Synced with Drive
+                    </p>
+                </div>
+
+                <div className="mx-3 mb-2 border-t border-border/50" />
+
+                {/* Home / All Files */}
+                <div className="mb-2 px-2">
+                    <button
+                        onClick={onHomeClick}
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 group
+                            ${activeFolderId === null
+                                ? 'bg-primary/10 text-primary shadow-[0_0_15px_rgba(255,153,0,0.1)]'
+                                : 'text-text-secondary hover:bg-surface-3 hover:text-white'}`}
+                        style={activeFolderId === null ? { border: '1px solid rgba(255,153,0,0.2)' } : { border: '1px solid transparent' }}
+                    >
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors
+                            ${activeFolderId === null ? 'bg-primary/20 text-primary' : 'bg-surface-3 text-text-muted group-hover:bg-primary/20 group-hover:text-primary'}`}>
+                            <HiOutlineCollection size={18} />
+                        </div>
+                        <span className="text-sm font-semibold truncate flex-1 text-left">Tất cả file</span>
+                    </button>
+                </div>
+
+                <div className="mx-3 mb-2 border-t border-border/50" />
+
+                {/* Quick Access */}
+                {starredFolders.length > 0 && (
+                    <div className="mb-2 px-2">
+                        <div className="px-2 py-1.5 text-[10px] font-bold text-text-muted uppercase tracking-wider flex items-center gap-1.5">
+                            <HiStar size={12} className="text-primary" /> Tiện ích nhanh
+                        </div>
+                        {starredFolders.map(node => (
+                            <QuickAccessItem
+                                key={`starred-${node.id}`}
+                                node={node}
+                                activeFolderId={activeFolderId}
+                                onFolderClick={onFolderClick}
+                                appConfig={appConfig}
+                                onContextMenu={handleContextMenu}
+                            />
+                        ))}
+                    </div>
+                )}
+
+                {starredFolders.length > 0 && <div className="mx-3 mb-2 border-t border-border/50" />}
+
+                {/* Folder tree */}
+                <div className="flex-1 sidebar-scroll py-1 px-2 overflow-y-auto pl-[2px]">
+                    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+                        {sortedRoots.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center py-12 text-center animate-fade-in">
+                                <span className="text-3xl mb-3">📂</span>
+                                <p className="text-xs font-medium text-text-secondary mb-1">Chưa có folder nào</p>
+                                <p className="text-[10px] text-text-muted">Tạo folder đầu tiên để bắt đầu</p>
+                            </div>
+                        ) : (
+                            sortedRoots.map((root) => (
+                                <SortableContext key={root.id} items={root.children.map(c => c.id)} strategy={verticalListSortingStrategy}>
+                                    {root.children.map((node, i) => (
+                                        <FolderTreeItem
+                                            key={node.id}
+                                            node={node}
+                                            depth={0}
+                                            activeFolderId={activeFolderId}
+                                            onFolderClick={onFolderClick}
+                                            onContextMenu={handleContextMenu}
+                                            editingId={editingId}
+                                            onRenameSubmit={handleRenameSubmit}
+                                            onRenameCancel={handleRenameCancel}
+                                            isLastChild={i === root.children.length - 1}
+                                            appConfig={appConfig}
+                                            onUpdateFolderMeta={onUpdateFolderMeta}
+                                        />
+                                    ))}
+                                </SortableContext>
+                            ))
+                        )}
+
+                        {/* Drag overlay for smooth dragging */}
+                        <DragOverlay dropAnimation={{
+                            duration: 200,
+                            easing: 'cubic-bezier(0.25, 1, 0.5, 1)',
+                        }}>
+                            {activeDragId ? (
+                                <div className="flex items-center gap-2 px-3 py-2 rounded-lg
+                                bg-surface-2/95 backdrop-blur-lg border border-primary/40
+                                shadow-[0_8px_32px_rgba(0,0,0,0.4)] text-sm text-white font-medium
+                                cursor-grabbing">
+                                    <HiOutlineFolder size={14} className="text-primary" />
+                                    {(() => {
+                                        const findName = (nodes: FolderNode[], id: string): string | null => {
+                                            for (const n of nodes) {
+                                                if (n.id === id) return n.name;
+                                                const found = findName(n.children, id);
+                                                if (found) return found;
+                                            }
+                                            return null;
+                                        };
+                                        return findName(folders, activeDragId) || 'Folder';
+                                    })()}
+                                </div>
+                            ) : null}
+                        </DragOverlay>
+                    </DndContext>
+                </div>
+
+                {/* Bottom actions */}
+                <div className="p-3 border-t border-border/50">
+                    <button
+                        onClick={() => setAddFolderParent({ id: null, name: null })}
+                        className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold
+              text-text-secondary hover:text-white border border-dashed border-border-light
+              hover:border-primary hover:bg-primary/5 transition-all duration-200
+              hover:shadow-[0_0_12px_rgba(255,153,0,0.1)]"
+                    >
+                        <HiOutlinePlus size={14} />
+                        Tạo folder mới
+                    </button>
+                </div>
+
+                {/* Drag handle */}
+                <div
+                    className="absolute top-0 right-0 w-1.5 h-full cursor-col-resize group hidden lg:block"
+                    onMouseDown={startResize}
+                >
+                    <div className="w-full h-full bg-transparent hover:bg-primary/30 active:bg-primary/50 transition-colors" />
+                </div>
+            </aside>
+
+            {/* Context menu */}
+            {contextMenu && (
+                <ContextMenu
+                    menu={contextMenu}
+                    isStarred={!!appConfig.folderMeta[contextMenu.node.id]?.isStarred}
+                    onToggleStar={handleToggleStarClick}
+                    onRename={handleStartRename}
+                    onAddSub={handleAddSub}
+                    onDelete={handleDeleteClick}
+                    onChangeIcon={handleChangeIconClick}
+                    onClose={() => setContextMenu(null)}
+                />
+            )}
+
+            {/* Icon Picker Dialog */}
+            {iconPickerTarget && (
+                <IconPickerDialog
+                    folderName={iconPickerTarget.name}
+                    currentIcon={iconPickerTarget.currentIcon}
+                    onSelect={(icon) => {
+                        onUpdateFolderMeta(iconPickerTarget.id, { icon });
+                        setIconPickerTarget(null);
+                    }}
+                    onClose={() => setIconPickerTarget(null)}
+                />
+            )}
+
+            {/* Delete confirm */}
+            {deleteTarget && (
+                <DeleteConfirm
+                    name={deleteTarget.name}
+                    onConfirm={handleDeleteConfirm}
+                    onCancel={() => setDeleteTarget(null)}
+                />
+            )}
+
+            {/* Add folder dialog */}
+            {addFolderParent !== null && (
+                <AddFolderDialog
+                    parentName={addFolderParent.name}
+                    onConfirm={handleAddFolder}
+                    onCancel={() => setAddFolderParent(null)}
+                />
+            )}
+        </>
+    );
+}

@@ -1,0 +1,165 @@
+import { useState } from 'react';
+import {
+    HiOutlineTrash, HiOutlineTag, HiX,
+    HiOutlineCheckCircle, HiOutlineClipboardList,
+} from 'react-icons/hi';
+import type { KanbanStatus, Label } from '../types';
+
+/* ── Props ───────────────────────────────────────────────── */
+
+interface BulkActionBarProps {
+    selectedCount: number;
+    appLabels: Label[];
+    onDeleteAll: () => void;
+    onChangeStatus: (status: KanbanStatus) => void;
+    onAddTag: (tag: string) => void;
+    onClearSelection: () => void;
+}
+
+/* ── Status Options ──────────────────────────────────────── */
+
+const STATUS_OPTIONS: { id: KanbanStatus; label: string; emoji: string }[] = [
+    { id: 'todo', label: 'To Do', emoji: '📋' },
+    { id: 'in_progress', label: 'In Progress', emoji: '🔨' },
+    { id: 'review', label: 'Review', emoji: '👀' },
+    { id: 'approved', label: 'Approved', emoji: '✅' },
+];
+
+/* ── Component ───────────────────────────────────────────── */
+
+export default function BulkActionBar({
+    selectedCount, appLabels, onDeleteAll, onChangeStatus, onAddTag, onClearSelection,
+}: BulkActionBarProps) {
+    const [showStatusMenu, setShowStatusMenu] = useState(false);
+    const [showTagMenu, setShowTagMenu] = useState(false);
+    const [customTag, setCustomTag] = useState('');
+
+    if (selectedCount === 0) return null;
+
+    return (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 animate-slide-up">
+            <div className="flex items-center gap-3 px-5 py-3 rounded-2xl
+                bg-surface-2/95 backdrop-blur-xl border border-border
+                shadow-[0_16px_64px_rgba(0,0,0,0.5)]">
+
+                {/* Selection count */}
+                <div className="flex items-center gap-2 pr-3 border-r border-border">
+                    <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center">
+                        <HiOutlineCheckCircle size={18} className="text-primary" />
+                    </div>
+                    <span className="text-sm font-semibold text-white whitespace-nowrap">
+                        {selectedCount} đã chọn
+                    </span>
+                </div>
+
+                {/* Status change */}
+                <div className="relative">
+                    <button
+                        onClick={() => { setShowStatusMenu(!showStatusMenu); setShowTagMenu(false); }}
+                        className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium
+                            bg-blue-500/15 text-blue-400 hover:bg-blue-500/25 transition-all duration-200"
+                    >
+                        <HiOutlineClipboardList size={15} />
+                        Đổi trạng thái
+                    </button>
+                    {showStatusMenu && (
+                        <div className="absolute bottom-full left-0 mb-2 w-44 rounded-xl glass p-1.5 animate-scale-in"
+                            style={{ boxShadow: '0 16px 48px rgba(0,0,0,0.4)' }}>
+                            {STATUS_OPTIONS.map(s => (
+                                <button key={s.id}
+                                    onClick={() => { onChangeStatus(s.id); setShowStatusMenu(false); }}
+                                    className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs
+                                        text-text-secondary hover:text-white hover:bg-white/10 transition-colors"
+                                >
+                                    <span>{s.emoji}</span>
+                                    {s.label}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                {/* Add tag */}
+                <div className="relative">
+                    <button
+                        onClick={() => { setShowTagMenu(!showTagMenu); setShowStatusMenu(false); }}
+                        className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium
+                            bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-all duration-200"
+                    >
+                        <HiOutlineTag size={15} />
+                        Gắn tag
+                    </button>
+                    {showTagMenu && (
+                        <div className="absolute bottom-full left-0 mb-2 w-52 rounded-xl glass p-2 animate-scale-in"
+                            style={{ boxShadow: '0 16px 48px rgba(0,0,0,0.4)' }}>
+                            {/* Predefined labels */}
+                            {appLabels.length > 0 && (
+                                <div className="space-y-0.5 mb-2">
+                                    {appLabels.map(label => (
+                                        <button key={label.id}
+                                            onClick={() => { onAddTag(label.name); setShowTagMenu(false); }}
+                                            className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs
+                                                text-text-secondary hover:text-white hover:bg-white/10 transition-colors"
+                                        >
+                                            <span className="w-2.5 h-2.5 rounded-full shrink-0"
+                                                style={{ background: label.color }} />
+                                            {label.name}
+                                        </button>
+                                    ))}
+                                    <div className="h-px bg-border my-1.5" />
+                                </div>
+                            )}
+                            {/* Custom tag input */}
+                            <form onSubmit={e => {
+                                e.preventDefault();
+                                if (customTag.trim()) {
+                                    onAddTag(customTag.trim());
+                                    setCustomTag('');
+                                    setShowTagMenu(false);
+                                }
+                            }}
+                                className="flex gap-1.5"
+                            >
+                                <input
+                                    type="text"
+                                    value={customTag}
+                                    onChange={e => setCustomTag(e.target.value)}
+                                    placeholder="Tag mới..."
+                                    className="flex-1 px-2.5 py-1.5 rounded-lg text-xs bg-surface-3 border border-border
+                                        text-white placeholder-text-muted outline-none focus:border-primary"
+                                    autoFocus
+                                />
+                                <button type="submit"
+                                    className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-primary/20 text-primary
+                                        hover:bg-primary/30 transition-colors"
+                                >
+                                    +
+                                </button>
+                            </form>
+                        </div>
+                    )}
+                </div>
+
+                {/* Delete all */}
+                <button
+                    onClick={onDeleteAll}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium
+                        bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-all duration-200"
+                >
+                    <HiOutlineTrash size={15} />
+                    Xóa ({selectedCount})
+                </button>
+
+                {/* Clear selection */}
+                <button
+                    onClick={onClearSelection}
+                    className="w-8 h-8 rounded-lg flex items-center justify-center
+                        text-text-muted hover:text-white hover:bg-white/10 transition-all ml-1"
+                    title="Bỏ chọn"
+                >
+                    <HiX size={16} />
+                </button>
+            </div>
+        </div>
+    );
+}

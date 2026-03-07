@@ -1,0 +1,352 @@
+import { useState, useCallback } from 'react';
+import {
+    DndContext, closestCenter, PointerSensor, useSensor, useSensors,
+    DragOverlay, useDroppable,
+} from '@dnd-kit/core';
+import type { DragStartEvent, DragEndEvent, DragOverEvent } from '@dnd-kit/core';
+import { useDraggable } from '@dnd-kit/core';
+import { HiOutlinePhotograph, HiOutlineVideoCamera, HiOutlineDocumentText, HiOutlineTable, HiOutlineExternalLink, HiOutlineDocument } from 'react-icons/hi';
+import type { AssetFile, KanbanStatus, Label, FileType } from '../types';
+import { formatFileSize } from '../utils/fileUtils';
+
+/* ── Column Definitions ─────────────────────────────────── */
+
+interface KanbanColumn {
+    id: KanbanStatus;
+    title: string;
+    emoji: string;
+    gradient: string;
+    borderColor: string;
+    dotColor: string;
+}
+
+const COLUMNS: KanbanColumn[] = [
+    { id: 'todo', title: 'To Do', emoji: '📋', gradient: 'from-slate-500/20 to-slate-600/10', borderColor: 'border-slate-500/30', dotColor: 'bg-slate-400' },
+    { id: 'in_progress', title: 'In Progress', emoji: '🔨', gradient: 'from-blue-500/20 to-blue-600/10', borderColor: 'border-blue-500/30', dotColor: 'bg-blue-400' },
+    { id: 'review', title: 'Review', emoji: '👀', gradient: 'from-amber-500/20 to-amber-600/10', borderColor: 'border-amber-500/30', dotColor: 'bg-amber-400' },
+    { id: 'approved', title: 'Approved', emoji: '✅', gradient: 'from-emerald-500/20 to-emerald-600/10', borderColor: 'border-emerald-500/30', dotColor: 'bg-emerald-400' },
+];
+
+/* ── Props ───────────────────────────────────────────────── */
+
+interface KanbanBoardProps {
+    files: AssetFile[];
+    appLabels: Label[];
+    onFileClick: (file: AssetFile) => void;
+    onStatusChange: (fileId: string, newStatus: KanbanStatus) => void;
+    isLoading: boolean;
+}
+
+/* ── File Type Icon ──────────────────────────────────────── */
+
+const TYPE_ICONS: Record<FileType, typeof HiOutlinePhotograph> = {
+    image: HiOutlinePhotograph,
+    video: HiOutlineVideoCamera,
+    text: HiOutlineDocumentText,
+    pdf: HiOutlineDocument,
+    xlsx: HiOutlineTable,
+    link: HiOutlineExternalLink,
+    other: HiOutlineDocument,
+};
+
+const TYPE_COLORS: Record<FileType, string> = {
+    image: '#10B981',
+    video: '#8B5CF6',
+    text: '#3B82F6',
+    pdf: '#EF4444',
+    xlsx: '#F59E0B',
+    link: '#06B6D4',
+    other: '#6B7280',
+};
+
+/* ── Draggable Card ──────────────────────────────────────── */
+
+function DraggableKanbanCard({
+    file,
+    appLabels,
+    onClick,
+}: {
+    file: AssetFile;
+    appLabels: Label[];
+    onClick: (file: AssetFile) => void;
+}) {
+    const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+        id: file.id,
+        data: { file },
+    });
+
+    const style = transform
+        ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` }
+        : undefined;
+
+    const Icon = TYPE_ICONS[file.type];
+    const typeColor = TYPE_COLORS[file.type];
+
+    // Resolve label colors for this file
+    const fileLabels = (file.tags || [])
+        .map(tagId => appLabels.find(l => l.id === tagId))
+        .filter(Boolean) as Label[];
+
+    return (
+        <div
+            ref={setNodeRef}
+            style={style}
+            {...attributes}
+            {...listeners}
+            onClick={(e) => {
+                e.stopPropagation();
+                onClick(file);
+            }}
+            className={`group relative rounded-xl p-3 cursor-grab active:cursor-grabbing
+                bg-surface-2 border border-border hover:border-white/20
+                transition-all duration-200 hover:shadow-lg hover:shadow-black/20
+                ${isDragging ? 'opacity-40 scale-95' : 'hover:translate-y-[-2px]'}`}
+        >
+            {/* Thumbnail */}
+            {file.thumbnailUrl && file.type === 'image' ? (
+                <div className="w-full h-24 rounded-lg overflow-hidden mb-2.5">
+                    <img
+                        src={file.thumbnailUrl}
+                        alt={file.name}
+                        className="w-full h-full object-cover"
+                        draggable={false}
+                    />
+                </div>
+            ) : (
+                <div className="w-full h-16 rounded-lg flex items-center justify-center mb-2.5"
+                    style={{ background: `${typeColor}15` }}>
+                    <Icon size={24} style={{ color: typeColor }} />
+                </div>
+            )}
+
+            {/* File info */}
+            <p className="text-xs font-medium text-white truncate mb-1" title={file.name}>
+                {file.name}
+            </p>
+
+            <div className="flex items-center gap-2 text-[10px] text-text-muted">
+                <span className="flex items-center gap-1">
+                    <Icon size={10} style={{ color: typeColor }} />
+                    {file.type.toUpperCase()}
+                </span>
+                <span>{formatFileSize(file.size)}</span>
+            </div>
+
+            {/* Labels */}
+            {fileLabels.length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-2">
+                    {fileLabels.map(label => (
+                        <span
+                            key={label.id}
+                            className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold"
+                            style={{
+                                background: `${label.color}20`,
+                                color: label.color,
+                                border: `1px solid ${label.color}30`,
+                            }}
+                        >
+                            {label.name}
+                        </span>
+                    ))}
+                </div>
+            )}
+
+            {/* Tags */}
+            {file.tags.length > 0 && fileLabels.length === 0 && (
+                <div className="flex flex-wrap gap-1 mt-2">
+                    {file.tags.slice(0, 2).map(tag => (
+                        <span key={tag} className="text-[9px] px-1.5 py-0.5 rounded bg-surface-3 text-text-muted">
+                            #{tag}
+                        </span>
+                    ))}
+                    {file.tags.length > 2 && (
+                        <span className="text-[9px] text-text-muted">+{file.tags.length - 2}</span>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+/* ── Droppable Column ────────────────────────────────────── */
+
+function DroppableColumn({
+    column,
+    files,
+    appLabels,
+    onFileClick,
+    isOver,
+}: {
+    column: KanbanColumn;
+    files: AssetFile[];
+    appLabels: Label[];
+    onFileClick: (file: AssetFile) => void;
+    isOver: boolean;
+}) {
+    const { setNodeRef } = useDroppable({ id: column.id });
+
+    return (
+        <div
+            ref={setNodeRef}
+            className={`flex flex-col min-w-[260px] max-w-[320px] flex-1 rounded-2xl border transition-all duration-300
+                ${isOver
+                    ? `${column.borderColor} bg-gradient-to-b ${column.gradient} shadow-lg scale-[1.02]`
+                    : 'border-border/50 bg-surface/50'
+                }`}
+        >
+            {/* Column Header */}
+            <div className="flex items-center gap-2.5 px-4 py-3 border-b border-border/30">
+                <span className="text-base">{column.emoji}</span>
+                <h3 className="text-sm font-semibold text-white">{column.title}</h3>
+                <span className="ml-auto text-[10px] font-bold px-2 py-0.5 rounded-full bg-surface-3 text-text-muted">
+                    {files.length}
+                </span>
+            </div>
+
+            {/* Column Body */}
+            <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2.5"
+                style={{ maxHeight: 'calc(100vh - 250px)', minHeight: '200px' }}
+            >
+                {files.length === 0 ? (
+                    <div className={`flex flex-col items-center justify-center py-10 rounded-xl border-2 border-dashed
+                        transition-all duration-200
+                        ${isOver ? `${column.borderColor} bg-white/5` : 'border-border/30'}`}>
+                        <span className="text-2xl mb-2 opacity-40">{column.emoji}</span>
+                        <p className="text-xs text-text-muted">
+                            {isOver ? 'Thả vào đây!' : 'Kéo file vào đây'}
+                        </p>
+                    </div>
+                ) : (
+                    files.map(file => (
+                        <DraggableKanbanCard
+                            key={file.id}
+                            file={file}
+                            appLabels={appLabels}
+                            onClick={onFileClick}
+                        />
+                    ))
+                )}
+            </div>
+        </div>
+    );
+}
+
+/* ── Skeleton ────────────────────────────────────────────── */
+
+function KanbanSkeleton() {
+    return (
+        <div className="flex gap-4 overflow-x-auto pb-4">
+            {COLUMNS.map(col => (
+                <div key={col.id} className="flex flex-col min-w-[260px] flex-1 rounded-2xl border border-border/50 bg-surface/50">
+                    <div className="flex items-center gap-2.5 px-4 py-3 border-b border-border/30">
+                        <span className="text-base">{col.emoji}</span>
+                        <div className="h-3 w-20 rounded animate-shimmer" />
+                    </div>
+                    <div className="px-3 py-3 space-y-2.5">
+                        {Array.from({ length: 2 }).map((_, i) => (
+                            <div key={i} className="rounded-xl p-3 bg-surface-2 border border-border">
+                                <div className="h-16 rounded-lg animate-shimmer mb-2" />
+                                <div className="h-3 w-3/4 rounded animate-shimmer mb-1" />
+                                <div className="h-2 w-1/2 rounded animate-shimmer" />
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+}
+
+/* ── Main Component ──────────────────────────────────────── */
+
+export default function KanbanBoard({ files, appLabels, onFileClick, onStatusChange, isLoading }: KanbanBoardProps) {
+    const [activeId, setActiveId] = useState<string | null>(null);
+    const [overColumnId, setOverColumnId] = useState<string | null>(null);
+
+    const sensors = useSensors(
+        useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
+    );
+
+    // Group files by kanbanStatus
+    const filesByColumn = COLUMNS.reduce((acc, col) => {
+        acc[col.id] = files.filter(f => (f.kanbanStatus || 'todo') === col.id);
+        return acc;
+    }, {} as Record<KanbanStatus, AssetFile[]>);
+
+    const activeFile = activeId ? files.find(f => f.id === activeId) : null;
+
+    const handleDragStart = useCallback((event: DragStartEvent) => {
+        setActiveId(event.active.id as string);
+    }, []);
+
+    const handleDragOver = useCallback((event: DragOverEvent) => {
+        setOverColumnId(event.over?.id as string || null);
+    }, []);
+
+    const handleDragEnd = useCallback((event: DragEndEvent) => {
+        const { active, over } = event;
+        setActiveId(null);
+        setOverColumnId(null);
+
+        if (!over) return;
+
+        const fileId = active.id as string;
+        const targetColumn = over.id as KanbanStatus;
+
+        // Only update if it's a valid column and the status actually changed
+        if (COLUMNS.some(c => c.id === targetColumn)) {
+            const file = files.find(f => f.id === fileId);
+            if (file && (file.kanbanStatus || 'todo') !== targetColumn) {
+                onStatusChange(fileId, targetColumn);
+            }
+        }
+    }, [files, onStatusChange]);
+
+    if (isLoading) return <KanbanSkeleton />;
+
+    if (files.length === 0) {
+        return (
+            <div className="flex flex-col items-center justify-center py-16 rounded-2xl border-2 border-dashed border-border/50 animate-fade-in">
+                <span className="text-4xl mb-3">📋</span>
+                <h3 className="text-base font-semibold text-white mb-1">Chưa có file nào</h3>
+                <p className="text-sm text-text-secondary text-center max-w-xs">
+                    Upload files rồi chuyển sang Kanban view để quản lý tiến độ
+                </p>
+            </div>
+        );
+    }
+
+    return (
+        <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragStart={handleDragStart}
+            onDragOver={handleDragOver}
+            onDragEnd={handleDragEnd}
+        >
+            <div className="flex gap-4 overflow-x-auto pb-4 kanban-scroll">
+                {COLUMNS.map(column => (
+                    <DroppableColumn
+                        key={column.id}
+                        column={column}
+                        files={filesByColumn[column.id]}
+                        appLabels={appLabels}
+                        onFileClick={onFileClick}
+                        isOver={overColumnId === column.id}
+                    />
+                ))}
+            </div>
+
+            {/* Drag overlay — ghost card follows cursor */}
+            <DragOverlay>
+                {activeFile ? (
+                    <div className="rounded-xl p-3 bg-surface-2 border border-primary/50 shadow-2xl shadow-primary/20
+                        rotate-2 scale-105 opacity-90 pointer-events-none w-[260px]">
+                        <p className="text-xs font-medium text-white truncate">{activeFile.name}</p>
+                        <span className="text-[10px] text-text-muted">{activeFile.type.toUpperCase()}</span>
+                    </div>
+                ) : null}
+            </DragOverlay>
+        </DndContext>
+    );
+}

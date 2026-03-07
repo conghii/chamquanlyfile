@@ -1,0 +1,191 @@
+import { useState, useRef, useEffect } from 'react';
+import {
+    HiX, HiOutlinePlus, HiOutlineTrash, HiOutlinePencil,
+    HiOutlineCheck, HiOutlineSearch,
+} from 'react-icons/hi';
+import type { AsinItem } from '../types';
+
+interface AsinManagerProps {
+    isOpen: boolean;
+    asins: AsinItem[];
+    onClose: () => void;
+    onSave: (asins: AsinItem[]) => void;
+}
+
+export default function AsinManager({ isOpen, asins, onClose, onSave }: AsinManagerProps) {
+    const [items, setItems] = useState<AsinItem[]>(asins);
+    const [editingIndex, setEditingIndex] = useState<number | null>(null);
+    const [newAsin, setNewAsin] = useState('');
+    const [newName, setNewName] = useState('');
+    const [search, setSearch] = useState('');
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    useEffect(() => { setItems(asins); }, [asins]);
+
+    if (!isOpen) return null;
+
+    const filtered = items.filter(a =>
+        a.asin.toLowerCase().includes(search.toLowerCase()) ||
+        a.name.toLowerCase().includes(search.toLowerCase())
+    );
+
+    const handleAdd = () => {
+        const asin = newAsin.trim().toUpperCase();
+        const name = newName.trim();
+        if (!asin) return;
+        if (items.some(a => a.asin === asin)) return;
+        const updated = [...items, { asin, name: name || asin }];
+        setItems(updated);
+        onSave(updated);
+        setNewAsin('');
+        setNewName('');
+        inputRef.current?.focus();
+    };
+
+    const handleDelete = (idx: number) => {
+        const updated = items.filter((_, i) => i !== idx);
+        setItems(updated);
+        onSave(updated);
+    };
+
+    const handleEdit = (idx: number, field: 'asin' | 'name', value: string) => {
+        const updated = [...items];
+        updated[idx] = { ...updated[idx], [field]: value };
+        setItems(updated);
+    };
+
+    const handleEditDone = () => {
+        setEditingIndex(null);
+        onSave(items);
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+            <div
+                className="relative w-full max-w-lg bg-surface rounded-2xl border border-border overflow-hidden
+                    shadow-[0_32px_128px_rgba(0,0,0,0.5)] animate-scale-in"
+                onClick={e => e.stopPropagation()}
+            >
+                {/* Header */}
+                <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-500 to-amber-600 flex items-center justify-center text-lg">
+                            📦
+                        </div>
+                        <div>
+                            <h2 className="text-base font-bold text-white">Quản lý ASIN</h2>
+                            <p className="text-xs text-text-muted">{items.length} sản phẩm</p>
+                        </div>
+                    </div>
+                    <button onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center text-text-muted hover:text-white hover:bg-surface-3 transition-all">
+                        <HiX size={18} />
+                    </button>
+                </div>
+
+                {/* Search */}
+                <div className="px-6 py-3">
+                    <div className="relative">
+                        <HiOutlineSearch size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+                        <input
+                            type="text"
+                            value={search}
+                            onChange={e => setSearch(e.target.value)}
+                            placeholder="Tìm ASIN..."
+                            className="w-full pl-8 pr-3 py-2 rounded-xl text-sm bg-surface-3 border border-border
+                                text-white outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+                        />
+                    </div>
+                </div>
+
+                {/* ASIN List */}
+                <div className="px-6 max-h-[300px] overflow-y-auto space-y-1.5 sidebar-scroll">
+                    {filtered.length === 0 && (
+                        <div className="text-center py-8 text-text-muted text-xs">
+                            {search ? 'Không tìm thấy ASIN' : 'Chưa có ASIN nào. Thêm sản phẩm phía dưới.'}
+                        </div>
+                    )}
+                    {filtered.map((item) => {
+                        const realIndex = items.indexOf(item);
+                        const isEditing = editingIndex === realIndex;
+                        return (
+                            <div key={`${item.asin}-${realIndex}`}
+                                className={`group flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all
+                                    ${isEditing ? 'bg-primary/10 border border-primary/30' : 'hover:bg-surface-3 border border-transparent'}`}>
+                                {isEditing ? (
+                                    <>
+                                        <input
+                                            type="text" value={item.asin}
+                                            onChange={e => handleEdit(realIndex, 'asin', e.target.value.toUpperCase())}
+                                            className="w-28 px-2 py-1 rounded-lg text-xs font-mono bg-surface-3 border border-border text-white outline-none focus:border-primary"
+                                        />
+                                        <input
+                                            type="text" value={item.name}
+                                            onChange={e => handleEdit(realIndex, 'name', e.target.value)}
+                                            className="flex-1 px-2 py-1 rounded-lg text-xs bg-surface-3 border border-border text-white outline-none focus:border-primary"
+                                        />
+                                        <button onClick={handleEditDone}
+                                            className="text-success hover:text-success/80 transition-colors">
+                                            <HiOutlineCheck size={14} />
+                                        </button>
+                                    </>
+                                ) : (
+                                    <>
+                                        <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold font-mono
+                                            bg-primary/15 text-primary border border-primary/20">
+                                            {item.asin}
+                                        </span>
+                                        <span className="flex-1 text-sm text-text-secondary truncate">{item.name}</span>
+                                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <button onClick={() => setEditingIndex(realIndex)}
+                                                className="w-6 h-6 rounded flex items-center justify-center text-text-muted hover:text-white hover:bg-surface-3 transition-all">
+                                                <HiOutlinePencil size={12} />
+                                            </button>
+                                            <button onClick={() => handleDelete(realIndex)}
+                                                className="w-6 h-6 rounded flex items-center justify-center text-text-muted hover:text-error hover:bg-error/10 transition-all">
+                                                <HiOutlineTrash size={12} />
+                                            </button>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+
+                {/* Add new ASIN */}
+                <div className="px-6 py-4 border-t border-border">
+                    <div className="flex items-center gap-2">
+                        <input
+                            ref={inputRef}
+                            type="text" value={newAsin}
+                            onChange={e => setNewAsin(e.target.value.toUpperCase())}
+                            onKeyDown={e => e.key === 'Enter' && handleAdd()}
+                            placeholder="ASIN..."
+                            className="w-28 px-3 py-2 rounded-xl text-xs font-mono bg-surface-3 border border-border
+                                text-white outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+                        />
+                        <input
+                            type="text" value={newName}
+                            onChange={e => setNewName(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && handleAdd()}
+                            placeholder="Tên sản phẩm..."
+                            className="flex-1 px-3 py-2 rounded-xl text-xs bg-surface-3 border border-border
+                                text-white outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+                        />
+                        <button
+                            onClick={handleAdd}
+                            disabled={!newAsin.trim()}
+                            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold
+                                transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                            style={{ background: 'linear-gradient(135deg, #FF9900, #E88B00)', color: '#1a1a1a' }}
+                        >
+                            <HiOutlinePlus size={14} />
+                            Thêm
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
