@@ -108,7 +108,7 @@ function timeAgo(date) {
 
 const S = {
     sidebar: {
-        width: 220, background: '#1a1a2e',
+        width: 260, background: '#1a1a2e',
         display: 'flex', flexDirection: 'column',
         height: '100%', overflow: 'hidden',
         borderRight: '1px solid #2a2a3e',
@@ -147,8 +147,9 @@ const S = {
     folderName: (isActive) => ({
         flex: 1, fontSize: 12, fontWeight: isActive ? 600 : 400,
         color: isActive ? '#e0e0e0' : '#9ca3af',
-        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        overflowWrap: 'anywhere', wordBreak: 'break-word',
         margin: 0, transition: 'color 150ms',
+        lineHeight: '1.4',
     }),
     badge: {
         fontSize: 11, fontWeight: 700, color: '#fff',
@@ -378,7 +379,7 @@ function FolderItem({
                         </div>
                     </div>
                 ) : (
-                    <span style={S.folderName(isActive)}>
+                    <span style={S.folderName(isActive)} title={node.name}>
                         <HighlightText text={node.name} query={searchQuery} />
                     </span>
                 )}
