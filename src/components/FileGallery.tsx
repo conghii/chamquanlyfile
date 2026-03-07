@@ -91,7 +91,7 @@ export default function FileGallery({
         return (
             <div
                 {...getRootProps()}
-                onClick={(e) => {
+                onClick={() => {
                     // Manually trigger open only if clicking the background of empty state
                     open();
                 }}
