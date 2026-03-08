@@ -1,0 +1,38 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-jakarta);
+}
+
+:root {
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+/* Smooth scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #e5e7eb transparent;
+}
+.dark * {
+  scrollbar-color: #374151 transparent;
+}
+
+body {
+  font-family: var(--font-jakarta, system-ui, sans-serif);
+}
+
+/* Transition all color/bg changes */
+*, *::before, *::after {
+  transition-property: background-color, border-color, color;
+  transition-duration: 150ms;
+  transition-timing-function: ease;
+}
+
+/* Except transforms and opacity — those should be opt-in */
+.no-transition {
+  transition: none !important;
+}
